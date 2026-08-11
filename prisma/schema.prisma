@@ -1,0 +1,613 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────
+
+enum UserRole {
+  super_admin
+  admin
+  user
+  operator
+  viewer
+}
+
+enum UserStatus {
+  invited
+  active
+  inactive
+  closed
+}
+
+enum CompanyType {
+  customer
+  vendor
+}
+
+enum ConnectionType {
+  SMPP
+  HTTP
+}
+
+enum ConnectionDirection {
+  MT
+  MO
+  BOTH
+}
+
+enum ConnectionStatus {
+  active
+  inactive
+  error
+}
+
+// Which path outbound sends for this vendor connection take. JASMIN (default)
+// preserves current behavior exactly; DIRECT opts a specific vendor into the
+// app's own pipelined SMPP client (src/lib/direct-smpp.ts) once verified,
+// bypassing Jasmin's single-in-flight-request-per-bind throughput ceiling.
+enum ConnectionTransport {
+  JASMIN
+  DIRECT
+}
+
+enum SmppAccountStatus {
+  active
+  suspended
+  disabled
+}
+
+enum BindMode {
+  TX
+  RX
+  TRX
+}
+
+enum BindAction {
+  bind
+  unbind
+  rejected
+  error
+}
+
+enum CampaignStatus {
+  draft
+  running
+  paused
+  completed
+  cancelled
+}
+
+enum CampaignNumberStatus {
+  pending
+  submitted
+  delivered
+  failed
+}
+
+enum SmsEncoding {
+  GSM7  @map("GSM-7")
+  UCS2  @map("UCS-2")
+}
+
+enum SmsStatus {
+  queued
+  sending
+  submitted
+  sent
+  delivered
+  failed
+}
+
+enum RepeatFreq {
+  none
+  hourly
+  daily
+  weekly
+  monthly
+  yearly
+}
+
+enum ScheduleStatus {
+  pending
+  paused
+  sending
+  completed
+  cancelled
+  failed
+}
+
+// ─── Models ──────────────────────────────────────────────
+
+model User {
+  id              Int         @id @default(autoincrement())
+  username        String      @unique @db.VarChar(50)
+  fullName        String?     @default("Administrator") @map("full_name") @db.VarChar(100)
+  firstName       String?     @map("first_name") @db.VarChar(60)
+  lastName        String?     @map("last_name") @db.VarChar(60)
+  passwordHash    String      @map("password_hash") @db.VarChar(255)
+  email           String?     @unique @db.VarChar(120)
+  emailVerified   Boolean     @default(false) @map("email_verified")
+  phoneNumber     String?     @map("phone_number") @db.VarChar(25)
+  country         String?     @db.VarChar(60)
+  countryCode     String?     @map("country_code") @db.VarChar(5)
+  timezone        String?     @default("UTC") @db.VarChar(60)
+  timeFormat      String?     @default("24h") @map("time_format") @db.VarChar(5)
+  googleId        String?     @unique @map("google_id") @db.VarChar(120)
+  avatarUrl       String?     @map("avatar_url") @db.VarChar(500)
+  role            UserRole    @default(user)
+  status          UserStatus  @default(active)
+  isActive        Boolean     @default(true) @map("is_active")
+  ownerId         Int?        @map("owner_id")
+  inviteToken     String?     @unique @map("invite_token") @db.VarChar(120)
+  inviteExpiresAt DateTime?   @map("invite_expires_at") @db.Timestamptz
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  lastLogin       DateTime?   @map("last_login") @db.Timestamptz
+
+  owner            User?      @relation("UserOwner", fields: [ownerId], references: [id])
+  ownedUsers       User[]     @relation("UserOwner")
+  createdCompanies Company[]  @relation("CreatedBy")
+  createdCampaigns Campaign[] @relation("CampaignCreatedBy")
+
+  @@index([ownerId])
+  @@index([status])
+  @@map("users")
+}
+
+model Company {
+  id           Int         @id @default(autoincrement())
+  name         String      @db.VarChar(100)
+  code         String      @unique @db.VarChar(20)
+  type         CompanyType
+  contactName  String?     @map("contact_name") @db.VarChar(100)
+  contactEmail String?     @map("contact_email") @db.VarChar(100)
+  contactPhone String?     @map("contact_phone") @db.VarChar(20)
+  isActive     Boolean     @default(true) @map("is_active")
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  createdBy    Int?        @map("created_by")
+  balance      Decimal     @default(0) @map("balance") @db.Decimal(12, 4)
+  currency     String      @default("INR") @db.VarChar(3)
+
+  creator          User?                @relation("CreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  connections      Connection[]
+  smppAccounts     CustomerSmppAccount[]
+  customerRoutes   Route[]              @relation("CustomerRoutes")
+  vendorRoutes     Route[]              @relation("VendorRoutes")
+  customerMessages SmsMessage[]         @relation("CustomerMessages")
+  vendorMessages   SmsMessage[]         @relation("VendorMessages")
+  campaigns        Campaign[]
+  trafficSummaries TrafficSummary[]
+
+  @@index([createdBy])
+  @@map("companies")
+}
+
+model Connection {
+  id           Int                @id @default(autoincrement())
+  companyId    Int                @map("company_id")
+  name         String             @db.VarChar(100)
+  type         ConnectionType     @default(HTTP)
+  direction    ConnectionDirection @default(MT)
+  host         String?            @db.VarChar(255)
+  port         Int?
+  username     String?            @db.VarChar(100)
+  password     String?            @db.VarChar(255)
+  apiUrl       String?            @map("api_url") @db.VarChar(500)
+  apiKey       String?            @map("api_key") @db.VarChar(255)
+  maxTps       Int                @default(10) @map("max_tps")
+  transport    ConnectionTransport @default(JASMIN)
+  status       ConnectionStatus   @default(active)
+  lastActivity DateTime?          @map("last_activity") @db.Timestamptz
+  createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  company  Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages SmsMessage[]
+
+  @@index([companyId])
+  @@map("connections")
+}
+
+model CustomerSmppAccount {
+  id                   Int               @id @default(autoincrement())
+  companyId            Int               @default(0) @map("company_id")
+  accountName          String?           @map("account_name") @db.VarChar(100)
+  systemId             String            @unique @map("system_id") @db.VarChar(32)
+  password             String            @db.VarChar(64)
+  allowedIps           String            @map("allowed_ips") @db.Text
+  assignedIp           String?           @map("assigned_ip") @db.VarChar(45)
+  maxConnections       Int               @default(2) @map("max_connections")
+  maxTps               Int               @default(10) @map("max_tps")
+  sourceAddr           String?           @map("source_addr") @db.VarChar(20)
+  status               SmppAccountStatus @default(active)
+  bindMode             BindMode          @default(TRX) @map("bind_mode")
+  routeType            String            @default("wholesale") @map("route_type") @db.VarChar(32)
+  errorCodeLevel       String            @default("off") @map("error_code_level") @db.VarChar(16)
+  messagePriority      String            @default("normal") @map("message_priority") @db.VarChar(16)
+  enquireInterval      Int               @default(45) @map("enquire_interval")
+  connectionTimeout    Int               @default(500) @map("connection_timeout")
+  responseTimeout      Int               @default(300) @map("response_timeout")
+  speedLimit           Int               @default(10) @map("speed_limit")
+  chargingModel        String            @default("submission") @map("charging_model") @db.VarChar(16)
+  connectionBlocked    String            @default("no") @map("connection_blocked") @db.VarChar(3)
+  allowOpenSender      String            @default("no") @map("allow_open_sender") @db.VarChar(3)
+  enableDelivery       String            @default("yes") @map("enable_delivery") @db.VarChar(3)
+  processIncompleteSms String            @default("no") @map("process_incomplete_sms") @db.VarChar(3)
+  disableIpBlocking    String            @default("no") @map("disable_ip_blocking") @db.VarChar(3)
+  contentWhitelisting  String            @default("no") @map("content_whitelisting") @db.VarChar(20)
+  totalSent            Int               @default(0) @map("total_sent")
+  totalDelivered       Int               @default(0) @map("total_delivered")
+  totalFailed          Int               @default(0) @map("total_failed")
+  lastBindAt           DateTime?         @map("last_bind_at") @db.Timestamptz
+  lastBindIp           String?           @map("last_bind_ip") @db.VarChar(45)
+  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  company  Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages SmsMessage[] @relation("SmppAccountMessages")
+  bindLogs SmppBindLog[]
+
+  @@index([companyId])
+  @@index([status])
+  @@map("customer_smpp_accounts")
+}
+
+model Route {
+  id           Int      @id @default(autoincrement())
+  name         String   @db.VarChar(100)
+  customerId   Int      @map("customer_id")
+  vendorId     Int      @map("vendor_id")
+  countryCode  String   @map("country_code") @db.VarChar(5)
+  numberPrefix String   @default("") @map("number_prefix") @db.VarChar(10)
+  operatorName String?  @map("operator_name") @db.VarChar(60)
+  sellingRate  Decimal  @default(0.0000) @map("selling_rate") @db.Decimal(10, 4)
+  buyingRate   Decimal  @default(0.0000) @map("buying_rate") @db.Decimal(10, 4)
+  isActive     Boolean  @default(true) @map("is_active")
+  priority     Int      @default(1)
+  weight       Int      @default(100) @map("weight")
+  batchId      String?  @map("batch_id") @db.VarChar(40)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  customer Company      @relation("CustomerRoutes", fields: [customerId], references: [id], onDelete: Cascade)
+  vendor   Company      @relation("VendorRoutes", fields: [vendorId], references: [id], onDelete: Cascade)
+  messages SmsMessage[]
+
+  @@index([customerId])
+  @@index([vendorId])
+  @@index([batchId])
+  @@map("routes")
+}
+
+model SmsMessage {
+  id                BigInt      @id @default(autoincrement())
+  messageId         String      @unique @map("message_id") @db.VarChar(50)
+  customerId        Int?        @map("customer_id")
+  vendorId          Int?        @map("vendor_id")
+  routeId           Int?        @map("route_id")
+  connectionId      Int?        @map("connection_id")
+  customerAccountId Int?        @map("customer_account_id")
+  campaignId        Int?        @map("campaign_id")
+  senderId          String?     @map("sender_id") @db.VarChar(20)
+  destination       String      @db.VarChar(20)
+  messageText       String?     @map("message_text") @db.Text
+  encoding          SmsEncoding @default(GSM7)
+  parts             Int         @default(1)
+  status            SmsStatus   @default(submitted)
+  errorCode         String?     @map("error_code") @db.VarChar(20)
+  errorMessage      String?     @map("error_message") @db.VarChar(255)
+  sellingRate       Decimal     @default(0.0000) @map("selling_rate") @db.Decimal(10, 4)
+  buyingRate        Decimal     @default(0.0000) @map("buying_rate") @db.Decimal(10, 4)
+  submittedAt       DateTime    @default(now()) @map("submitted_at") @db.Timestamptz
+  sentAt            DateTime?   @map("sent_at") @db.Timestamptz
+  deliveredAt       DateTime?   @map("delivered_at") @db.Timestamptz
+  dlrReceivedAt     DateTime?   @map("dlr_received_at") @db.Timestamptz
+  sourceIp          String?     @map("source_ip") @db.VarChar(45)
+  jasminMessageId   String?     @map("jasmin_message_id") @db.VarChar(64)
+
+  customer        Company?             @relation("CustomerMessages", fields: [customerId], references: [id], onDelete: SetNull)
+  vendor          Company?             @relation("VendorMessages", fields: [vendorId], references: [id], onDelete: SetNull)
+  route           Route?               @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  connection      Connection?          @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  customerAccount CustomerSmppAccount? @relation("SmppAccountMessages", fields: [customerAccountId], references: [id], onDelete: SetNull)
+  campaign        Campaign?            @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([customerId])
+  @@index([vendorId])
+  @@index([status])
+  @@index([submittedAt])
+  @@index([destination])
+  @@index([routeId])
+  @@index([connectionId])
+  @@index([customerAccountId])
+  @@index([campaignId])
+  @@map("sms_messages")
+}
+
+model Campaign {
+  id           Int            @id @default(autoincrement())
+  name         String?        @db.VarChar(100)
+  companyId    Int            @map("company_id")
+  senderId     String?        @map("sender_id") @db.VarChar(20)
+  messageText  String?        @map("message_text") @db.Text
+  totalNumbers Int            @default(0) @map("total_numbers")
+  submitted    Int            @default(0)
+  delivered    Int            @default(0)
+  failed       Int            @default(0)
+  status       CampaignStatus @default(draft)
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  startedAt    DateTime?      @map("started_at") @db.Timestamptz
+  completedAt  DateTime?      @map("completed_at") @db.Timestamptz
+  createdBy    Int?           @map("created_by")
+
+  company Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  creator User?            @relation("CampaignCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  numbers CampaignNumber[]
+  messages SmsMessage[]
+
+  @@index([companyId])
+  @@index([createdBy])
+  @@map("campaigns")
+}
+
+model CampaignNumber {
+  id           BigInt               @id @default(autoincrement())
+  campaignId   Int                  @map("campaign_id")
+  phoneNumber  String               @map("phone_number") @db.VarChar(20)
+  messageId    String?              @map("message_id") @db.VarChar(50)
+  status       CampaignNumberStatus @default(pending)
+  errorMessage String?              @map("error_message") @db.VarChar(255)
+  processedAt  DateTime?            @map("processed_at") @db.Timestamptz
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@map("campaign_numbers")
+}
+
+model SmppBindLog {
+  id        Int        @id @default(autoincrement())
+  accountId Int?       @map("account_id")
+  systemId  String?    @map("system_id") @db.VarChar(32)
+  clientIp  String?    @map("client_ip") @db.VarChar(45)
+  action    BindAction
+  reason    String?    @db.VarChar(255)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz
+
+  account CustomerSmppAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([accountId])
+  @@index([createdAt])
+  @@map("smpp_bind_log")
+}
+
+model TrafficSummary {
+  id          BigInt      @id @default(autoincrement())
+  companyId   Int         @map("company_id")
+  companyType CompanyType @map("company_type")
+  periodStart DateTime    @map("period_start") @db.Timestamptz
+  periodEnd   DateTime    @map("period_end") @db.Timestamptz
+  submitted   Int         @default(0)
+  sent        Int         @default(0)
+  delivered   Int         @default(0)
+  failed      Int         @default(0)
+  rejected    Int         @default(0)
+  revenue     Decimal     @default(0.0000) @db.Decimal(12, 4)
+  cost        Decimal     @default(0.0000) @db.Decimal(12, 4)
+  status      String      @default("draft") @db.VarChar(16)
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([periodStart, periodEnd])
+  @@map("traffic_summary")
+}
+
+model Setting {
+  id           Int      @id @default(autoincrement())
+  settingKey   String   @unique @map("setting_key") @db.VarChar(50)
+  settingValue String?  @map("setting_value") @db.Text
+  description  String?  @db.VarChar(255)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("settings")
+}
+
+// ─── Contact Management ───────────────────────────────────
+
+model Contact {
+  id             Int      @id @default(autoincrement())
+  customerId     Int      @map("customer_id")
+  phoneNumber    String   @map("phone_number") @db.VarChar(20)
+  firstName      String?  @map("first_name") @db.VarChar(100)
+  lastName       String?  @map("last_name") @db.VarChar(100)
+  email          String?  @db.VarChar(150)
+  company        String?  @db.VarChar(150)
+  country        String?  @db.VarChar(5)
+  whatsappNumber String?  @map("whatsapp_number") @db.VarChar(20)
+  notes          String?  @db.Text
+  isActive       Boolean  @default(true) @map("is_active")
+  isUnsubscribed Boolean  @default(false) @map("is_unsubscribed")
+  isBlocked      Boolean  @default(false) @map("is_blocked")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  listEntries ContactListEntry[]
+  tags        ContactTag[]
+
+  @@index([customerId])
+  @@index([phoneNumber])
+  @@index([customerId, phoneNumber])
+  @@map("contacts")
+}
+
+model ContactList {
+  id           Int      @id @default(autoincrement())
+  customerId   Int      @map("customer_id")
+  name         String   @db.VarChar(100)
+  description  String?  @db.Text
+  contactCount Int      @default(0) @map("contact_count")
+  isDefault    Boolean  @default(false) @map("is_default")
+  isPinned     Boolean  @default(false) @map("is_pinned")
+  isHidden     Boolean  @default(false) @map("is_hidden")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  entries ContactListEntry[]
+
+  @@index([customerId])
+  @@map("contact_lists")
+}
+
+model ContactListEntry {
+  id        BigInt @id @default(autoincrement())
+  listId    Int    @map("list_id")
+  contactId Int    @map("contact_id")
+
+  list    ContactList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  contact Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, contactId])
+  @@index([listId])
+  @@index([contactId])
+  @@map("contact_list_entries")
+}
+
+model Tag {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @map("customer_id")
+  name       String   @db.VarChar(50)
+  color      String   @default("gray") @db.VarChar(20)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  contacts ContactTag[]
+
+  @@unique([customerId, name])
+  @@index([customerId])
+  @@map("tags")
+}
+
+model ContactTag {
+  id        BigInt @id @default(autoincrement())
+  contactId Int    @map("contact_id")
+  tagId     Int    @map("tag_id")
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, tagId])
+  @@index([contactId])
+  @@index([tagId])
+  @@map("contact_tags")
+}
+
+// ─── Scheduled Campaigns ──────────────────────────────────
+
+// ─── Templates ────────────────────────────────────────────
+
+model TemplateCategory {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @map("customer_id")
+  name       String   @db.VarChar(100)
+  color      String   @default("slate") @db.VarChar(20)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  templates Template[]
+
+  @@unique([customerId, name])
+  @@index([customerId])
+  @@map("template_categories")
+}
+
+model Template {
+  id         Int       @id @default(autoincrement())
+  customerId Int       @map("customer_id")
+  categoryId Int?      @map("category_id")
+  name       String    @db.VarChar(150)
+  content    String    @db.Text
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz
+  useCount   Int       @default(0) @map("use_count")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  category TemplateCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([customerId])
+  @@index([categoryId])
+  @@map("templates")
+}
+
+model ScheduledCampaign {
+  id              Int            @id @default(autoincrement())
+  customerId      Int            @map("customer_id")
+  senderId        String         @default("SMSLCL") @map("sender_id") @db.VarChar(20)
+  routeId         Int?           @map("route_id")
+  messageText     String         @map("message_text") @db.Text
+  encoding        SmsEncoding    @default(GSM7)
+  recipientsJson  Json           @map("recipients_json")
+  recipientsCount Int            @default(0) @map("recipients_count")
+  scheduledAt     DateTime       @map("scheduled_at") @db.Timestamptz
+  timezone        String         @default("Asia/Kolkata") @db.VarChar(50)
+  repeatFreq      RepeatFreq     @default(none) @map("repeat_freq")
+  nextRunAt       DateTime?      @map("next_run_at") @db.Timestamptz
+  lastRunAt       DateTime?      @map("last_run_at") @db.Timestamptz
+  runCount        Int            @default(0) @map("run_count")
+  status          ScheduleStatus @default(pending)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([customerId])
+  @@index([status, nextRunAt])
+  @@map("scheduled_campaigns")
+}
+
+// ─── Content Filtering ─────────────────────────────────────
+
+model ContentFilter {
+  id         Int      @id @default(autoincrement())
+  customerId Int?     @map("customer_id")
+  keyword    String   @db.VarChar(100)
+  action     String   @default("block") @db.VarChar(16)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([customerId])
+  @@map("content_filters")
+}
+
+// ─── Inbound / Two-Way SMS (MO) ────────────────────────────
+
+model InboundMessage {
+  id                 Int      @id @default(autoincrement())
+  fromAddr           String   @map("from_addr") @db.VarChar(20)
+  toAddr             String   @map("to_addr") @db.VarChar(20)
+  messageText        String?  @map("message_text") @db.Text
+  customerId         Int?     @map("customer_id")
+  vendorConnectorCid String?  @map("vendor_connector_cid") @db.VarChar(50)
+  receivedAt         DateTime @default(now()) @map("received_at") @db.Timestamptz
+
+  @@index([customerId])
+  @@index([receivedAt])
+  @@map("inbound_messages")
+}
+
+// ─── Audit Trail ───────────────────────────────────────────
+// Written by src/lib/audit.ts via raw SQL against `audit_logs`.
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?     @map("user_id")
+  action     String   @db.VarChar(60)
+  resource   String?  @db.VarChar(60)
+  resourceId String?  @map("resource_id") @db.VarChar(60)
+  ipAddress  String?  @map("ip_address") @db.VarChar(60)
+  details    Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
